@@ -1,0 +1,6 @@
+@CodeScanner.Api_HostAddress = http://localhost:5057
+
+GET {{CodeScanner.Api_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
