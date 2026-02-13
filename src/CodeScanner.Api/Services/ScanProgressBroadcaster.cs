@@ -6,21 +6,31 @@ namespace CodeScanner.Api.Services;
 
 public class ScanProgressBroadcaster
 {
-    private readonly ConcurrentDictionary<int, ConcurrentBag<Channel<ScanProgressEvent>>> _subscribers = new();
+    private readonly ConcurrentDictionary<int, ScanSubscription> _subscriptions = new();
+    private readonly ConcurrentDictionary<int, bool> _completedScans = new();
+
+    public bool IsCompleted(int scanId) => _completedScans.ContainsKey(scanId);
 
     public IDisposable Subscribe(int scanId, Channel<ScanProgressEvent> channel)
     {
-        var bag = _subscribers.GetOrAdd(scanId, _ => []);
-        bag.Add(channel);
-        return new Subscription(this, scanId, channel);
+        // If the scan already completed, immediately complete the channel
+        if (_completedScans.ContainsKey(scanId))
+        {
+            channel.Writer.TryComplete();
+            return new NoOpDisposable();
+        }
+
+        var sub = _subscriptions.GetOrAdd(scanId, _ => new ScanSubscription());
+        sub.Channels.Add(channel);
+        return new Unsubscriber(channel);
     }
 
     public async Task BroadcastAsync(int scanId, ScanProgressEvent evt)
     {
-        if (!_subscribers.TryGetValue(scanId, out var bag))
+        if (!_subscriptions.TryGetValue(scanId, out var sub))
             return;
 
-        foreach (var channel in bag)
+        foreach (var channel in sub.Channels)
         {
             try
             {
@@ -32,23 +42,31 @@ public class ScanProgressBroadcaster
 
     public void Complete(int scanId)
     {
-        if (!_subscribers.TryGetValue(scanId, out var bag))
-            return;
+        _completedScans.TryAdd(scanId, true);
 
-        foreach (var channel in bag)
+        if (_subscriptions.TryRemove(scanId, out var sub))
         {
-            channel.Writer.TryComplete();
+            foreach (var channel in sub.Channels)
+            {
+                channel.Writer.TryComplete();
+            }
         }
     }
 
-    private void Unsubscribe(int scanId, Channel<ScanProgressEvent> channel)
+    private sealed class ScanSubscription
     {
-        channel.Writer.TryComplete();
-        // ConcurrentBag doesn't support removal, but completed channels are harmless
+        public ConcurrentBag<Channel<ScanProgressEvent>> Channels { get; } = [];
     }
 
-    private sealed class Subscription(ScanProgressBroadcaster broadcaster, int scanId, Channel<ScanProgressEvent> channel) : IDisposable
+    private sealed class Unsubscriber : IDisposable
     {
-        public void Dispose() => broadcaster.Unsubscribe(scanId, channel);
+        private readonly Channel<ScanProgressEvent> _channel;
+        public Unsubscriber(Channel<ScanProgressEvent> channel) => _channel = channel;
+        public void Dispose() => _channel.Writer.TryComplete();
+    }
+
+    private sealed class NoOpDisposable : IDisposable
+    {
+        public void Dispose() { }
     }
 }

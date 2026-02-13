@@ -5,6 +5,5 @@ public enum FindingCategory
     SecurityVulnerability,
     DeadCode,
     LintError,
-    CodeSmell,
     Bug
 }

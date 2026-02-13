@@ -58,14 +58,17 @@ public class ScanService : IScanService
     public async Task<Scan?> GetScanAsync(int id, CancellationToken ct = default)
     {
         return await _db.Scans
-            .Include(s => s.Files)
-            .ThenInclude(f => f.Findings)
+            .AsNoTracking()
             .FirstOrDefaultAsync(s => s.Id == id, ct);
     }
 
     public async Task<List<Scan>> ListScansAsync(int page, int pageSize, CancellationToken ct = default)
     {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
+
         return await _db.Scans
+            .AsNoTracking()
             .OrderByDescending(s => s.CreatedAt)
             .Skip((page - 1) * pageSize)
             .Take(pageSize)
@@ -75,18 +78,25 @@ public class ScanService : IScanService
     public async Task DeleteScanAsync(int id, CancellationToken ct = default)
     {
         var scan = await _db.Scans.FindAsync([id], ct);
-        if (scan is not null)
-        {
-            _db.Scans.Remove(scan);
-            await _db.SaveChangesAsync(ct);
-        }
+        if (scan is null)
+            return;
+
+        if (scan.Status is ScanStatus.Queued or ScanStatus.InProgress)
+            throw new InvalidOperationException($"Cannot delete scan {id} while it is {scan.Status}. Wait for it to complete or fail.");
+
+        _db.Scans.Remove(scan);
+        await _db.SaveChangesAsync(ct);
     }
 
     public async Task<List<FindingResponse>> GetFindingsAsync(
         int scanId, FindingCategory? category, Severity? severity,
         int page, int pageSize, CancellationToken ct = default)
     {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 200);
+
         var query = _db.Findings
+            .AsNoTracking()
             .Include(f => f.ScanFile)
             .Where(f => f.ScanFile.ScanId == scanId);
 
@@ -116,27 +126,38 @@ public class ScanService : IScanService
 
     public async Task<ScanSummary> GetSummaryAsync(int scanId, CancellationToken ct = default)
     {
-        var findings = await _db.Findings
-            .Include(f => f.ScanFile)
+        var categoryCounts = await _db.Findings
+            .AsNoTracking()
             .Where(f => f.ScanFile.ScanId == scanId)
+            .GroupBy(f => f.Category)
+            .Select(g => new { Category = g.Key.ToString(), Count = g.Count() })
             .ToListAsync(ct);
 
+        var severityCounts = await _db.Findings
+            .AsNoTracking()
+            .Where(f => f.ScanFile.ScanId == scanId)
+            .GroupBy(f => f.Severity)
+            .Select(g => new { Severity = g.Key.ToString(), Count = g.Count() })
+            .ToListAsync(ct);
+
+        var total = categoryCounts.Sum(c => c.Count);
+
         return new ScanSummary(
-            findings.Count,
-            findings.GroupBy(f => f.Category.ToString()).ToDictionary(g => g.Key, g => g.Count()),
-            findings.GroupBy(f => f.Severity.ToString()).ToDictionary(g => g.Key, g => g.Count()));
+            total,
+            categoryCounts.ToDictionary(c => c.Category, c => c.Count),
+            severityCounts.ToDictionary(c => c.Severity, c => c.Count));
     }
 
     public async Task<List<ScanFileResponse>> GetFilesAsync(int scanId, bool? hasFindings, CancellationToken ct = default)
     {
         var query = _db.ScanFiles
-            .Include(f => f.Findings)
+            .AsNoTracking()
             .Where(f => f.ScanId == scanId);
 
         if (hasFindings == true)
-            query = query.Where(f => f.Findings.Count > 0);
+            query = query.Where(f => f.Findings.Any());
         else if (hasFindings == false)
-            query = query.Where(f => f.Findings.Count == 0);
+            query = query.Where(f => !f.Findings.Any());
 
         return await query
             .OrderBy(f => f.RelativePath)
@@ -154,6 +175,7 @@ public class ScanService : IScanService
     public async Task<ScanFile?> GetFileWithFindingsAsync(int scanId, int fileId, CancellationToken ct = default)
     {
         return await _db.ScanFiles
+            .AsNoTracking()
             .Include(f => f.Findings)
             .FirstOrDefaultAsync(f => f.ScanId == scanId && f.Id == fileId, ct);
     }

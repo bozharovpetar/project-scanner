@@ -28,7 +28,14 @@ public class OllamaClient : IOllamaClient
         _logger.LogDebug("Sending prompt to Ollama ({Model}), length: {Length} chars", _model, prompt.Length);
 
         var response = await _httpClient.PostAsJsonAsync("/api/generate", request, ct);
-        response.EnsureSuccessStatusCode();
+
+        if (!response.IsSuccessStatusCode)
+        {
+            var errorBody = await response.Content.ReadAsStringAsync(ct);
+            _logger.LogError("Ollama returned {StatusCode}: {Body}", (int)response.StatusCode, errorBody);
+            throw new HttpRequestException(
+                $"Ollama returned {(int)response.StatusCode}: {errorBody[..Math.Min(errorBody.Length, 500)]}");
+        }
 
         var json = await response.Content.ReadFromJsonAsync<JsonElement>(ct);
         var result = json.GetProperty("response").GetString() ?? "{}";

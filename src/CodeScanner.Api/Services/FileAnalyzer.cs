@@ -39,6 +39,8 @@ public class FileAnalyzer : IFileAnalyzer
                 var findings = await AnalyzeChunkAsync(filePath, chunk, language, ct);
                 allFindings.AddRange(findings);
             }
+
+            allFindings = DeduplicateFindings(allFindings);
         }
 
         return allFindings;
@@ -117,6 +119,14 @@ public class FileAnalyzer : IFileAnalyzer
             return defaultValue;
 
         return Enum.TryParse<T>(value, ignoreCase: true, out var result) ? result : defaultValue;
+    }
+
+    private static List<Finding> DeduplicateFindings(List<Finding> findings)
+    {
+        return findings
+            .GroupBy(f => new { f.Title, f.LineStart, f.Category })
+            .Select(g => g.First())
+            .ToList();
     }
 
     private static List<string> SplitIntoChunks(string content, int maxChars)

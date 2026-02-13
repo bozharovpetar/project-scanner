@@ -7,6 +7,11 @@ namespace CodeScanner.Api.Endpoints;
 
 public static class ScanEndpoints
 {
+    private static readonly JsonSerializerOptions SseJsonOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+    };
+
     public static void MapScanEndpoints(this WebApplication app)
     {
         var group = app.MapGroup("/api/scans").WithTags("Scans");
@@ -55,17 +60,45 @@ public static class ScanEndpoints
 
         group.MapDelete("/{id:int}", async (int id, IScanService scanService, CancellationToken ct) =>
         {
-            await scanService.DeleteScanAsync(id, ct);
-            return Results.NoContent();
+            try
+            {
+                await scanService.DeleteScanAsync(id, ct);
+                return Results.NoContent();
+            }
+            catch (InvalidOperationException ex)
+            {
+                return Results.Conflict(new { error = ex.Message });
+            }
         })
         .WithName("DeleteScan")
         .WithDescription("Delete a scan and all related data");
 
-        group.MapGet("/{id:int}/progress", async (int id, ScanProgressBroadcaster broadcaster, HttpContext ctx, CancellationToken ct) =>
+        group.MapGet("/{id:int}/progress", async (int id, ScanProgressBroadcaster broadcaster, IScanService scanService, HttpContext ctx, CancellationToken ct) =>
         {
+            // Check if scan exists
+            var scan = await scanService.GetScanAsync(id, ct);
+            if (scan is null)
+            {
+                ctx.Response.StatusCode = 404;
+                return;
+            }
+
             ctx.Response.ContentType = "text/event-stream";
             ctx.Response.Headers.CacheControl = "no-cache";
             ctx.Response.Headers.Connection = "keep-alive";
+
+            // If already completed/failed, send final status and close
+            if (scan.Status is Models.Enums.ScanStatus.Completed or Models.Enums.ScanStatus.Failed)
+            {
+                var evt = new ScanProgressEvent(
+                    scan.Status == Models.Enums.ScanStatus.Completed ? "scan_completed" : "scan_failed",
+                    id, null, scan.ProcessedFiles, scan.TotalFiles,
+                    scan.ErrorMessage ?? "Scan already completed");
+                var json = JsonSerializer.Serialize(evt, SseJsonOptions);
+                await ctx.Response.WriteAsync($"data: {json}\n\n", ct);
+                await ctx.Response.Body.FlushAsync(ct);
+                return;
+            }
 
             var channel = Channel.CreateUnbounded<ScanProgressEvent>();
             using var sub = broadcaster.Subscribe(id, channel);
@@ -74,10 +107,7 @@ public static class ScanEndpoints
             {
                 await foreach (var evt in channel.Reader.ReadAllAsync(ct))
                 {
-                    var json = JsonSerializer.Serialize(evt, new JsonSerializerOptions
-                    {
-                        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
-                    });
+                    var json = JsonSerializer.Serialize(evt, SseJsonOptions);
                     await ctx.Response.WriteAsync($"data: {json}\n\n", ct);
                     await ctx.Response.Body.FlushAsync(ct);
                 }

@@ -55,10 +55,10 @@ public class FileDiscoveryService : IFileDiscoveryService
     public Task<List<DiscoveredFile>> DiscoverFilesAsync(string projectPath, CancellationToken ct = default)
     {
         var maxFileSize = _config.GetValue("Scanner:MaxFileSizeBytes", 102400L);
-        var skipDirs = _config.GetSection("Scanner:SkipDirectories").Get<string[]>() ?? [];
-        var skipSet = skipDirs.Length > 0
-            ? new HashSet<string>(skipDirs, StringComparer.OrdinalIgnoreCase)
-            : DefaultSkipDirs;
+        var extraSkipDirs = _config.GetSection("Scanner:SkipDirectories").Get<string[]>() ?? [];
+        var skipSet = new HashSet<string>(DefaultSkipDirs, StringComparer.OrdinalIgnoreCase);
+        foreach (var dir in extraSkipDirs)
+            skipSet.Add(dir);
 
         var gitignorePatterns = LoadGitignorePatterns(projectPath);
         var files = new List<DiscoveredFile>();
